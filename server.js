@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cookieSession = require('cookie-session');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const hosts = require('./src/hosts');
 const { pick } = require('./src/draw');
@@ -93,7 +94,7 @@ app.get('/api/giveaways', requireHost, wrap(async (req, res) => {
 }));
 
 app.post('/api/giveaways', requireHost, wrap(async (req, res) => {
-  const cfg = sanitizeConfig({ ...defaultConfig(), ...(req.body?.name ? { name: req.body.name } : {}) });
+  const cfg = sanitizeConfig({ ...defaultConfig(), ...(req.body?.name ? { name: req.body.name } : {}), timezone: req.body?.timezone });
   const id = await store.createGiveaway(req.session.hostId, cfg);
   await hosts.indexSet(id, req.session.hostId);
   res.json({ id });
@@ -254,6 +255,15 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
 }));
 
 // ---------- pages ----------
+// Legal pages live outside public/ so {{CONTACT}} is always filled in (CONTACT_EMAIL env var).
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const contact = process.env.CONTACT_EMAIL
+  ? `<a href="mailto:${esc(process.env.CONTACT_EMAIL)}">${esc(process.env.CONTACT_EMAIL)}</a>`
+  : 'the person who runs this site';
+for (const name of ['privacy', 'terms']) {
+  const html = fs.readFileSync(path.join(__dirname, 'legal', name + '.html'), 'utf8').replaceAll('{{CONTACT}}', contact);
+  app.get('/' + name, (req, res) => res.type('html').send(html));
+}
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/g/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'giveaway.html')));
 

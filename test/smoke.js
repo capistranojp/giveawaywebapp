@@ -7,7 +7,7 @@ const path = require('path');
 
 const PORT = 3999, B = `http://localhost:${PORT}`;
 const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-'));
-const srv = spawn('node', [path.join(__dirname, '..', 'server.js'), '--mock'], { env: { ...process.env, PORT, DATA_DIR: data, ENTRY_RATE_LIMIT: '1000' }, stdio: 'inherit' });
+const srv = spawn('node', [path.join(__dirname, '..', 'server.js'), '--mock'], { env: { ...process.env, PORT, DATA_DIR: data, ENTRY_RATE_LIMIT: '1000', CONTACT_EMAIL: 'help@example.com' }, stdio: 'inherit' });
 let cookie = '';
 
 async function req(method, url, body, opts = {}) {
@@ -113,6 +113,13 @@ async function req(method, url, body, opts = {}) {
   // delete
   assert.equal((await req('DELETE', '/api/giveaways/' + id)).status, 200);
   assert.equal((await req('GET', '/api/giveaways/' + id)).status, 404);
+
+  // legal pages
+  for (const p of ['privacy', 'terms']) {
+    const r = await req('GET', '/' + p, undefined, { anon: true });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.includes('mailto:help@example.com') && !r.body.includes('{{CONTACT}}'), p + ' page fills in the contact email');
+  }
 
   // static pages
   assert.ok((await req('GET', '/g/' + id, undefined, { anon: true })).body.includes('giveaway.js'));

@@ -1,103 +1,132 @@
-// Public giveaway page: info, steps, ways to enter, and the entry form.
+// Public giveaway page: a ticket up top, steps, ways to enter, and the entry form with a live ticket count.
 const app = document.getElementById('app');
 const id = location.pathname.split('/').pop();
-const ICONS = { follow: '➕', subscribe: '🔔', join: '👥', visit: '🔗', share: '📣', comment: '💬', custom: '⭐' };
 let timer;
+
+function countdown(target, offset) {
+  const bs = [], box = h('div', { class: 'count', role: 'timer' });
+  for (const label of ['days', 'hrs', 'min', 'sec']) {
+    const b = h('b', {}, '00');
+    bs.push(b);
+    box.append(h('div', {}, b, h('small', {}, label)));
+  }
+  const tick = () => {
+    const ms = target - (Date.now() + offset);
+    if (ms <= 0) { clearInterval(timer); setTimeout(load, 1500); return; } // delay avoids a reload loop if clocks differ slightly
+    const s = Math.floor(ms / 1000);
+    [Math.floor(s / 86400), Math.floor(s / 3600) % 24, Math.floor(s / 60) % 60, s % 60].forEach((n, i) => { bs[i].textContent = String(n).padStart(2, '0'); });
+  };
+  tick();
+  timer = setInterval(tick, 1000);
+  return box;
+}
 
 async function load() {
   clearInterval(timer);
   let g;
   try { g = await api('GET', '/api/public/' + id); } catch (e) {
     document.title = 'Giveaway not found';
-    app.replaceChildren(h('div', { class: 'card', style: 'margin-top:40px' }, h('h1', {}, 'Giveaway unavailable'), h('p', { class: 'muted' }, e.message)));
+    mount(app, h('section', { class: 'panel done' }, h('h1', {}, 'Giveaway unavailable'), h('p', { class: 'muted' }, e.message)));
     return;
   }
   document.title = g.name;
-  const offset = g.serverNow - Date.now();
-  const cd = h('div', { class: 'countdown', 'aria-live': 'off' });
-  const target = g.phase === 'upcoming' ? Date.parse(g.start) : Date.parse(g.end);
-  const tick = () => {
-    const ms = target - (Date.now() + offset);
-    if (ms <= 0) { load(); return; }
-    const s = Math.floor(ms / 1000), d = Math.floor(s / 86400);
-    const p = (n) => String(n).padStart(2, '0');
-    cd.textContent = `${d ? d + 'd ' : ''}${p(Math.floor(s / 3600) % 24)}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
-  };
-  if (g.phase === 'open' || g.phase === 'upcoming') { tick(); timer = setInterval(tick, 1000); }
+  const live = g.phase === 'open' || g.phase === 'upcoming';
+  const stubRight = live
+    ? h('div', {}, h('div', { class: 'muted-on-ticket', style: 'font-size:.82rem;opacity:.75;margin-bottom:6px' }, g.phase === 'open' ? 'Closes in' : 'Opens in'),
+      countdown(Date.parse(g.phase === 'open' ? g.end : g.start), g.serverNow - Date.now()))
+    : h('span', { class: 'closed-tag' }, 'Closed');
 
-  app.replaceChildren(
-    g.bannerUrl && h('img', { class: 'banner', src: g.bannerUrl, alt: '', referrerpolicy: 'no-referrer' }),
-    h('div', { style: 'margin-top:24px' },
-      h('h1', {}, g.name),
-      g.prize && h('p', {}, h('span', { class: 'prize' }, '🏆 ' + g.prize)),
-      g.description && h('p', { class: 'pre' }, g.description)),
-    h('div', { class: 'card' },
-      h('div', { class: 'row between' },
-        h('div', {}, h('div', { class: 'muted' }, 'Starts'), h('b', {}, fmtDate(g.start, g.timezone))),
-        h('div', {}, h('div', { class: 'muted' }, 'Ends'), h('b', {}, fmtDate(g.end, g.timezone)))),
-      (g.phase === 'open' || g.phase === 'upcoming') && h('div', { style: 'margin-top:12px' }, h('div', { class: 'muted' }, g.phase === 'open' ? 'Time left' : 'Starts in'), cd)),
-    g.steps.length > 0 && h('div', { class: 'card' }, h('h2', {}, 'How it works'),
-      h('ol', { class: 'steps' }, g.steps.map((s) => h('li', {}, h('div', {}, h('b', {}, s.title), s.text && h('div', { class: 'muted pre' }, s.text)))))),
+  mount(app, 
+    h('article', { class: 'ticket' },
+      g.bannerUrl && h('img', { class: 'ticket-banner', src: g.bannerUrl, alt: '', referrerpolicy: 'no-referrer' }),
+      h('div', { class: 'ticket-body' },
+        g.prize && h('p', { class: 'prize' }, g.prize),
+        h('h1', {}, g.name),
+        g.description && h('p', { class: 'desc' }, g.description)),
+      h('div', { class: 'perf' }),
+      h('div', { class: 'ticket-stub' },
+        h('div', { class: 'when' },
+          h('div', {}, h('span', {}, 'Opens'), h('b', {}, fmtDate(g.start, g.timezone))),
+          h('div', {}, h('span', {}, 'Closes'), h('b', {}, fmtDate(g.end, g.timezone)))),
+        stubRight)),
+    g.steps.length > 0 && h('section', { class: 'panel' }, h('h2', {}, 'How it works'),
+      h('ol', { class: 'steps' }, g.steps.map((s) => h('li', {}, h('div', {}, h('b', {}, s.title), s.text && h('span', { class: 'muted pre' }, s.text)))))),
     g.phase === 'open' && enterForm(g),
-    g.phase === 'ended' && h('div', { class: 'card success' },
-      h('div', { class: 'big' }, '🏁'), h('h2', {}, 'This giveaway has ended'),
-      g.winners?.length ? h('div', {}, h('p', { class: 'muted' }, 'Congratulations to the winner' + (g.winners.length > 1 ? 's' : '') + ':'), h('p', {}, h('b', {}, g.winners.join(', '))))
+    g.phase === 'ended' && h('section', { class: 'panel done' },
+      h('h2', {}, 'This giveaway has ended'),
+      g.winners?.length
+        ? [h('p', { class: 'muted' }, 'Congratulations to the winner' + (g.winners.length > 1 ? 's' : '') + ':'), h('div', { class: 'winners' }, g.winners.map((n) => h('span', {}, n)))]
         : h('p', { class: 'muted' }, 'Thanks to everyone who entered.')),
-    g.rules && h('details', { class: 'card' }, h('summary', {}, h('b', {}, 'Rules & terms')), h('p', { class: 'pre' }, g.rules)),
+    g.rules && h('details', { class: 'panel' }, h('summary', {}, 'Rules and terms'), h('p', { class: 'pre', style: 'margin:12px 0 0' }, g.rules)),
   );
 }
 
 function enterForm(g) {
-  const done = new Set(), visited = new Set();
-  const answers = {};
-  const total = h('b', {}, '1');
+  const done = new Set(), answers = {};
+  const total = h('span', { class: 'n' }, '1');
   const err = h('p', { class: 'error', role: 'alert' });
-  const updateTotal = () => { total.textContent = String(1 + g.entryMethods.filter((m) => done.has(m.id)).reduce((s, m) => s + m.points, 0)); };
+  const bump = () => {
+    total.textContent = String(1 + g.entryMethods.filter((m) => done.has(m.id)).reduce((s, m) => s + m.points, 0));
+    total.classList.remove('bump'); void total.offsetWidth; total.classList.add('bump');
+  };
 
-  const methodEls = g.entryMethods.map((m) => {
-    const box = h('input', { type: 'checkbox', id: 'm-' + m.id, disabled: !!m.url });
-    const card = h('div', { class: 'method' });
-    box.addEventListener('change', () => { box.checked ? done.add(m.id) : done.delete(m.id); card.classList.toggle('done', box.checked); updateTotal(); });
-    const open = m.url && h('a', { class: 'btn small', href: m.url, target: '_blank', rel: 'noopener noreferrer', onclick: () => { visited.add(m.id); box.disabled = false; hint.textContent = 'Tick the box once you have done it.'; } }, 'Open ↗');
-    const hint = h('small', { class: 'muted' }, m.url ? 'Open the link first, then tick the box.' : '');
-    card.append(
-      h('span', { class: 'ico', 'aria-hidden': 'true' }, ICONS[m.type] || '⭐'),
-      h('div', {}, h('b', {}, m.title), ' ', m.points > 0 && h('span', { class: 'badge' }, `+${m.points} ${m.points === 1 ? 'entry' : 'entries'}`), ' ', m.required && h('span', { class: 'badge' }, 'REQUIRED'),
-        m.description && h('div', { class: 'muted' }, m.description), hint),
-      h('div', { class: 'row' }, open, h('label', { class: 'check', for: 'm-' + m.id }, box, h('span', {}, 'Done'))));
-    return card;
+  const methods = g.entryMethods.map((m) => {
+    const box = h('input', { type: 'checkbox', disabled: !!m.url });
+    const hint = m.url && h('div', { class: 'm-text' }, 'Open the link first, then tick the box.');
+    box.addEventListener('change', () => { box.checked ? done.add(m.id) : done.delete(m.id); bump(); });
+    const open = m.url && h('a', {
+      class: 'btn small', href: m.url, target: '_blank', rel: 'noopener noreferrer',
+      onclick: () => { box.disabled = false; hint.textContent = 'Tick the box once you have done it.'; },
+    }, 'Open');
+    return h('label', { class: 'method' },
+      h('span', { class: 'plus', 'aria-hidden': 'true' }, '+' + m.points),
+      h('div', {},
+        h('div', { class: 'm-title' }, m.title, m.required && h('span', { class: 'req' }, 'Required')),
+        m.description && h('div', { class: 'm-text' }, m.description), hint, open && h('div', { class: 'm-open' }, open),
+        h('span', { class: 'sr-only' }, `${m.points} bonus ${m.points === 1 ? 'entry' : 'entries'}`)),
+      h('div', { class: 'm-side' }, box));
   });
 
   const fields = g.form.fields.map((f) => {
-    const id = 'f-' + f.id;
-    const label = f.label + (f.required && f.type !== 'checkbox' ? ' *' : '');
+    const fid = 'f-' + f.id;
     if (f.type === 'checkbox') {
-      const el = h('input', { type: 'checkbox', id }); el.addEventListener('change', () => { answers[f.id] = el.checked; });
-      return h('label', { class: 'check', for: id }, el, h('span', {}, f.label + (f.required ? ' *' : '')));
+      const el = h('input', { type: 'checkbox', id: fid });
+      el.addEventListener('change', () => { answers[f.id] = el.checked; });
+      return h('label', { class: 'check', for: fid }, el, h('span', {}, f.label + (f.required ? ' *' : '')));
     }
     let el;
-    if (f.type === 'textarea') el = h('textarea', { id, rows: 3, maxlength: 1000 });
-    else if (f.type === 'select') el = h('select', { id }, h('option', { value: '' }, 'Choose…'), f.options.map((o) => h('option', { value: o }, o)));
-    else el = h('input', { id, type: f.type === 'email' ? 'email' : f.type === 'url' ? 'url' : 'text', maxlength: 200, autocomplete: f.id === 'email' ? 'email' : f.id === 'name' ? 'name' : 'off' });
+    if (f.type === 'textarea') el = h('textarea', { id: fid, rows: 3, maxlength: 1000 });
+    else if (f.type === 'select') el = h('select', { id: fid }, h('option', { value: '' }, 'Choose…'), f.options.map((o) => h('option', { value: o }, o)));
+    else el = h('input', { id: fid, type: f.type === 'email' ? 'email' : f.type === 'url' ? 'url' : 'text', maxlength: 200, autocomplete: f.id === 'email' ? 'email' : f.id === 'name' ? 'name' : 'off' });
     el.addEventListener('input', () => { answers[f.id] = el.value; });
-    return h('label', { class: 'field', for: id }, h('span', {}, label), el);
+    return h('label', { class: 'field', for: fid }, h('span', {}, f.label + (f.required ? ' *' : '')), el);
   });
 
-  const btn = h('button', { class: 'btn primary', type: 'submit' }, g.form.submitLabel);
+  const btn = h('button', { class: 'btn big', type: 'submit' }, g.form.submitLabel);
   const hp = h('input', { class: 'hp', type: 'text', name: 'website', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' });
-  const form = h('form', { class: 'stack', novalidate: '', onsubmit: async (e) => {
+  const form = h('form', { class: 'enter', novalidate: '', onsubmit: async (e) => {
     e.preventDefault(); err.textContent = ''; btn.disabled = true;
     try {
       const r = await api('POST', `/api/public/${id}/enter`, { answers, methods: [...done], hp: hp.value });
-      form.parentElement.replaceWith(h('div', { class: 'card success' }, h('div', { class: 'big' }, '🎉'), h('h2', {}, r.message),
-        h('p', { class: 'muted' }, `You have ${r.entries} ${r.entries === 1 ? 'entry' : 'entries'} in the draw.`)));
-    } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
-  } }, fields, hp, err, h('div', { class: 'row between' }, h('span', {}, 'Your entries: ', total), btn));
-
-  return h('div', {},
-    g.entryMethods.length > 0 && h('div', { class: 'card' }, h('h2', {}, 'Ways to enter'),
-      h('p', { class: 'muted' }, 'You get 1 entry for entering. Complete extras for more chances. We trust you to be honest.'), methodEls),
-    h('div', { class: 'card' }, h('h2', {}, g.form.title), form));
+      const ok = h('section', { class: 'panel done' },
+        h('h2', {}, r.message),
+        h('p', { class: 'big' }, String(r.entries)),
+        h('p', { class: 'muted' }, r.entries === 1 ? 'ticket in the draw' : 'tickets in the draw'),
+        r.entryId && h('span', { class: 'serial' }, 'Entry ' + r.entryId));
+      form.replaceWith(ok);
+      ok.scrollIntoView({ block: 'center' });
+    } catch (ex) {
+      err.textContent = ex.message; btn.disabled = false;
+      err.scrollIntoView({ block: 'center' });
+    }
+  } },
+  methods.length > 0 && h('section', { class: 'panel' }, h('h2', {}, 'Ways to enter'),
+    h('p', { class: 'muted' }, 'Entering gives you 1 ticket. Each extra you complete adds more. We trust you to be honest.'), methods),
+  h('section', { class: 'panel stack' }, h('h2', {}, g.form.title), fields, hp, err),
+  h('div', { class: 'entry-bar' },
+    h('div', { class: 'tickets' }, total, h('span', { class: 'lbl' }, 'Your', h('br'), 'tickets')),
+    btn));
+  return form;
 }
 
 load();

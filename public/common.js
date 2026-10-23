@@ -18,6 +18,11 @@ function h(tag, props, ...kids) {
   return el;
 }
 
+// Replace an element's children, skipping null/false/'' (plain replaceChildren would print them as text).
+function mount(el, ...kids) {
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false && k !== ''));
+}
+
 async function api(method, url, body) {
   const r = await fetch(url, {
     method,
@@ -51,7 +56,8 @@ function zonedToUtc(local, tz) {
   return new Date(utc).toISOString();
 }
 function fmtDate(iso, tz) {
-  return new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: tz, timeZoneName: 'short' }).format(new Date(iso));
+  // dateStyle/timeStyle can't be combined with timeZoneName, so spell the fields out
+  return new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz, timeZoneName: 'short' }).format(new Date(iso));
 }
 function phaseOf(cfg, now = Date.now()) {
   if (cfg.status === 'draft') return 'draft';
@@ -61,6 +67,7 @@ function phaseOf(cfg, now = Date.now()) {
   return 'open';
 }
 function toast(msg, bad) {
+  document.querySelectorAll('.toast').forEach((x) => x.remove()); // one at a time, so messages never stack
   const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: 'status' }, msg);
   document.body.append(t);
   setTimeout(() => t.remove(), bad ? 6000 : 2800);
