@@ -53,6 +53,7 @@ app.get('/auth/google', wrap(async (req, res) => {
   }
   const state = crypto.randomBytes(16).toString('hex');
   req.session.state = state;
+  req.session.flow = null;
   res.redirect(store.authUrl(state));
 }));
 
@@ -60,11 +61,32 @@ app.get('/auth/callback', wrap(async (req, res) => {
   if (!req.query.code || !req.session.state || req.query.state !== req.session.state) throw fail(400, 'Invalid sign-in attempt');
   const { profile, refreshToken } = await store.exchange(req.query.code);
   if (!profile.id) throw fail(400, 'Google did not return an account id');
+  const guestFor = req.session.flow?.guestFor;
+  if (guestFor) { // someone signing in to enter a giveaway, not a host
+    if (!profile.email || profile.verified === false) throw fail(400, 'Your Google account needs a verified email address to enter.');
+    req.session.guest = { id: profile.id, name: profile.name || '', email: profile.email, picture: profile.picture || '' };
+    req.session.state = null; req.session.flow = null;
+    return res.redirect('/g/' + guestFor);
+  }
   if (!refreshToken && !(await hosts.getProfile(profile.id))) throw fail(400, 'Google did not grant offline access. Remove the app at myaccount.google.com/permissions and try again.');
   await hosts.upsertHost(profile.id, profile, refreshToken);
   req.session = { hostId: profile.id };
   res.redirect('/');
 }));
+
+app.get('/auth/enter/:id', (req, res) => {
+  const id = req.params.id;
+  if (!/^[\w-]{1,60}$/.test(id)) return res.status(400).json({ error: 'Invalid giveaway' });
+  if (MOCK) { // ?as=Name signs in as a made-up person, so the one-entry-per-account rules can be tried locally
+    const as = String(req.query.as || 'Guest').slice(0, 30);
+    req.session.guest = { id: 'mock-' + as.toLowerCase(), name: as, email: as.toLowerCase().replace(/\W+/g, '') + '@x.com', picture: '' };
+    return res.redirect('/g/' + id);
+  }
+  const state = crypto.randomBytes(16).toString('hex');
+  req.session.state = state;
+  req.session.flow = { guestFor: id };
+  res.redirect(store.guestAuthUrl(state));
+});
 
 app.post('/auth/logout', (req, res) => { req.session = null; res.json({ ok: true }); });
 
@@ -83,9 +105,36 @@ const owned = async (req) => {
   return id;
 };
 const cfgCache = new Map(); // public config cache, 15s TTL, keeps Sheets quota safe under traffic
-const emailCache = new Map();
+const seenCache = new Map(); // per giveaway: who has already entered, for duplicate checks
 const locks = new Map();
-const bust = (id) => { cfgCache.delete(id); emailCache.delete(id); };
+const bust = (id) => { cfgCache.delete(id); seenCache.delete(id); };
+
+// Duplicate detection. Values are simplified first, so trivial edits (case, spaces, punctuation,
+// Gmail dots and +tags) don't slip past. Loaded once per giveaway from the Sheet, then kept in memory.
+// shortcut: exact-after-simplifying matches only, no fuzzy/typo matching (it flags real people); single server instance only.
+const norm = (v) => String(v ?? '').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '');
+const normEmail = (e) => {
+  let [u, d = ''] = String(e).toLowerCase().trim().split('@');
+  if (d === 'googlemail.com') d = 'gmail.com';
+  if (d === 'gmail.com') u = u.split('+')[0].replace(/\./g, '');
+  return u + '@' + d;
+};
+const dupFields = (cfg) => cfg.form.fields.filter((f) => f.id === 'email' || f.unique);
+const dupKey = (f, v) => (f.id === 'email' ? normEmail(v) : norm(v));
+const rawVal = (e, fid) => (fid === 'email' ? e.email : fid === 'name' ? e.name : e.answers?.[fid]);
+function remember(seen, cfg, e) {
+  if (e.answers?._gid) seen.gids.add(e.answers._gid);
+  for (const f of dupFields(cfg)) { const v = rawVal(e, f.id); if (v) seen.vals.get(f.id)?.add(dupKey(f, v)); }
+}
+async function seenFor(id, hostId, cfg) {
+  let seen = seenCache.get(id);
+  if (!seen) {
+    seen = { gids: new Set(), vals: new Map(dupFields(cfg).map((f) => [f.id, new Set()])) };
+    for (const e of await store.getEntries(hostId, id)) remember(seen, cfg, e);
+    seenCache.set(id, seen);
+  }
+  return seen;
+}
 
 app.get('/api/giveaways', requireHost, wrap(async (req, res) => {
   const list = await store.listGiveaways(req.session.hostId);
@@ -191,8 +240,12 @@ app.get('/api/public/:id', wrap(async (req, res) => {
   const { cfg, hostId } = await publicCfg(req.params.id);
   if (cfg.status === 'draft') throw fail(404, 'This giveaway is not published yet.');
   const winners = phase(cfg) === 'ended' && cfg.showWinners ? await store.getWinners(hostId, req.params.id) : [];
-  res.json(publicView(cfg, winners));
+  const view = publicView(cfg, winners), g = req.session?.guest;
+  view.guest = g ? { name: g.name, email: g.email, picture: g.picture } : null;
+  res.set('Cache-Control', 'no-store').json(view);
 }));
+
+app.post('/api/public/signout', (req, res) => { if (req.session) req.session.guest = null; res.json({ ok: true }); });
 
 const hits = new Map();
 const limited = (ip) => {
@@ -212,7 +265,10 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
   if (ph !== 'open') throw fail(409, ph === 'upcoming' ? 'This giveaway has not started yet.' : ph === 'ended' ? 'This giveaway has ended.' : 'This giveaway is not open.');
   if (req.body?.hp) return res.json({ ok: true, entries: 1, message: cfg.form.successMessage }); // honeypot: pretend success to bots
 
-  const raw = req.body?.answers || {}, answers = {};
+  const needLogin = cfg.requireLogin !== false, guest = req.session?.guest;
+  if (needLogin && !guest) throw fail(401, 'Sign in with Google to enter.');
+  const raw = { ...(req.body?.answers || {}) }, answers = {};
+  if (needLogin) { raw.email = guest.email; raw.name = String(raw.name ?? '').trim() || guest.name; } // the email comes from Google, never the form
   for (const f of cfg.form.fields) {
     let v = raw[f.id];
     if (f.type === 'checkbox') v = v === true;
@@ -233,20 +289,19 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
   // serialise per giveaway so two simultaneous submits can't both pass the duplicate check
   const prev = locks.get(id) || Promise.resolve();
   const run = prev.then(async () => {
-    let emails = emailCache.get(id);
-    if (!emails) {
-      emails = new Set((await store.getEntries(hostId, id)).map((e) => String(e.email).toLowerCase()));
-      emailCache.set(id, emails);
+    const seen = await seenFor(id, hostId, cfg);
+    if (guest && seen.gids.has(guest.id)) throw fail(409, 'This Google account has already entered.');
+    for (const f of dupFields(cfg)) {
+      const v = answers[f.id];
+      if (v && seen.vals.get(f.id)?.has(dupKey(f, v))) throw fail(409, f.id === 'email' ? 'This email has already entered.' : `"${f.label}" has already been used to enter.`);
     }
-    const email = answers.email.toLowerCase();
-    if (emails.has(email)) throw fail(409, 'This email has already entered.');
     const entry = {
       id: newId(), ts: new Date().toISOString(), name: answers.name, email: answers.email,
       entries: total, methods: methods.map((m) => m.id),
-      answers: Object.fromEntries(Object.entries(answers).filter(([k]) => k !== 'name' && k !== 'email')),
+      answers: { ...Object.fromEntries(Object.entries(answers).filter(([k]) => k !== 'name' && k !== 'email')), ...(guest ? { _gid: guest.id } : {}) },
     };
     await store.appendEntry(hostId, id, entry);
-    emails.add(email);
+    remember(seen, cfg, entry);
     return entry;
   });
   locks.set(id, run.catch(() => {}));

@@ -32,6 +32,7 @@ function defaultConfig() {
     timezone: 'UTC',
     winnersCount: 1,
     showWinners: false,
+    requireLogin: true,
     steps: [
       { id: rid(), title: 'Pick your ways to enter', text: 'Complete as many as you like. Each one earns bonus entries.' },
       { id: rid(), title: 'Fill in the form', text: 'Tell us who to contact if you win.' },
@@ -46,7 +47,7 @@ function defaultConfig() {
       successMessage: "You're in! Good luck.",
       fields: [
         { id: 'name', label: 'Your name', type: 'text', required: true, locked: true, options: [] },
-        { id: 'email', label: 'Email address', type: 'email', required: true, locked: true, options: [] },
+        { id: 'email', label: 'Email address', type: 'email', required: true, locked: true, unique: true, options: [] },
         { id: 'agree', label: 'I agree to the giveaway rules', type: 'checkbox', required: true, options: [] },
       ],
     },
@@ -71,6 +72,7 @@ function sanitizeConfig(input, prev) {
   c.end = e.toISOString();
   c.winnersCount = Math.min(100, Math.max(1, parseInt(i.winnersCount, 10) || 1));
   c.showWinners = !!i.showWinners;
+  c.requireLogin = i.requireLogin !== false; // visitors sign in with Google to enter
 
   let seen = new Set();
   c.steps = (Array.isArray(i.steps) ? i.steps : []).slice(0, 20).map((x) => ({
@@ -96,6 +98,7 @@ function sanitizeConfig(input, prev) {
     type: FIELD_TYPES.includes(x.type) ? x.type : 'text',
     required: !!x.required,
     locked: x.id === 'name' || x.id === 'email',
+    unique: !!x.unique,
     options: (Array.isArray(x.options) ? x.options : []).map((o) => str(o, 80)).filter(Boolean).slice(0, 30),
   }));
   // name + email are required for contacting winners and de-duplicating entries
@@ -104,6 +107,8 @@ function sanitizeConfig(input, prev) {
     if (!fld) { fld = { id, label, type, required: true, locked: true, options: [] }; fields.unshift(fld); }
     fld.type = type; fld.required = true; fld.locked = true;
   }
+  // email is always checked for repeats; other short text fields only when the host asks
+  for (const fld of fields) fld.unique = fld.id === 'email' || !!(fld.unique && ['text', 'url', 'email'].includes(fld.type));
   c.form = {
     title: str(f.title, 120) || 'Enter the giveaway',
     submitLabel: str(f.submitLabel, 40) || 'Enter now',
@@ -132,7 +137,7 @@ function publicView(cfg, winners) {
     name: cfg.name, description: cfg.description, prize: cfg.prize, bannerUrl: cfg.bannerUrl,
     rules: cfg.rules, start: cfg.start, end: cfg.end, timezone: cfg.timezone,
     steps: cfg.steps, entryMethods: cfg.entryMethods, form: cfg.form,
-    phase: ph, serverNow: Date.now(),
+    phase: ph, serverNow: Date.now(), requireLogin: cfg.requireLogin !== false,
   };
   if (ph === 'ended' && cfg.showWinners) {
     out.winners = winners.filter((w) => w.status === 'active').map((w) => maskName(w.name));

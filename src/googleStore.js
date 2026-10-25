@@ -19,13 +19,16 @@ exports.authUrl = (state) => oauth().generateAuthUrl({
   access_type: 'offline', prompt: 'consent', scope: SCOPES, state, include_granted_scopes: true,
 });
 
+// People entering a giveaway only need to prove who they are: no Drive access, no refresh token.
+exports.guestAuthUrl = (state) => oauth().generateAuthUrl({ scope: ['openid', 'email', 'profile'], state, prompt: 'select_account' });
+
 exports.exchange = async (code) => {
   const c = oauth();
   const { tokens } = await c.getToken(code);
   c.setCredentials(tokens);
   const { data } = await google.oauth2({ version: 'v2', auth: c }).userinfo.get();
   return {
-    profile: { id: data.id, name: data.name, email: data.email, picture: data.picture },
+    profile: { id: data.id, name: data.name, email: data.email, picture: data.picture, verified: data.verified_email },
     refreshToken: tokens.refresh_token,
   };
 };

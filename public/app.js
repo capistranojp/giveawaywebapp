@@ -11,11 +11,22 @@ const METHOD_TYPES = { follow: 'Follow', subscribe: 'Subscribe', join: 'Join', v
 const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', select: 'Dropdown', checkbox: 'Checkbox', url: 'Link', email: 'Email' };
 const when = (iso) => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
+// "Hide names and emails" for screen-sharing; masks display only, copy/export still use real data
+let hidePII = false;
+const maskName = (n) => (hidePII ? String(n).split(/\s+/).map((w) => w.slice(0, 1) + '•••').join(' ') : n);
+const maskEmail = (e) => {
+  if (!hidePII) return e;
+  const [u, d = ''] = String(e).split('@'), i = d.lastIndexOf('.');
+  return u.slice(0, 1) + '•••@' + d.slice(0, 1) + '•••' + (i > 0 ? d.slice(i) : '');
+};
+const hideToggle = (redraw) => h('label', { class: 'row', style: 'gap:.4rem' },
+  h('input', { type: 'checkbox', checked: hidePII, onchange: (ev) => { hidePII = ev.target.checked; redraw(); } }), 'Hide names and emails');
+
 // ---------- shell ----------
 function drawTop() {
   mount(topbar, 
     h('a', { class: 'brand', href: '#/' }, h('img', { src: '/favicon.svg', alt: '', width: 26, height: 26 }), 'Giveaway Host'),
-    me?.user && h('span', { class: 'muted hide-s' }, me.user.email),
+    me?.user && h('span', { class: 'muted hide-s' }, me.user.name || me.user.email),
     me?.user?.picture && h('img', { class: 'avatar', src: me.user.picture, alt: '', referrerpolicy: 'no-referrer' }),
     me?.user && h('button', { class: 'btn small', onclick: async () => { await api('POST', '/auth/logout'); me = { user: null, mock: me.mock }; route(); } }, 'Sign out'),
   );
@@ -74,6 +85,8 @@ async function editorView(id) {
   mount(app, h('p', { class: 'muted', style: 'margin-top:36px' }, 'Loading…'));
   const d = await api('GET', '/api/giveaways/' + id);
   const S = { id, cfg: d.config, entries: d.entries, winners: d.winners, sheetUrl: d.sheetUrl, tab: 'details', dirty: false, q: '' };
+  S.cfg.requireLogin = S.cfg.requireLogin !== false; // older giveaways have no setting and behave as "on"
+  for (const f of S.cfg.form.fields) if (f.id === 'email') f.unique = true;
   const TABS = [['details', 'Details'], ['form', 'Entry form'], ['methods', 'Ways to enter'], ['steps', 'Steps'], ['entries', 'Participants'], ['winners', 'Winners']];
   let saveBtn, previewEl, previewTimer, titleEl;
 
@@ -165,6 +178,7 @@ async function editorView(id) {
       field('Banner image link', text(c, 'bannerUrl', { type: 'url', ph: 'https://…' }), 'Optional. Paste the web address of an image.'),
       h('div', { class: 'cols' }, field('Opens', startEl), field('Closes', endEl), field('Time zone', tz)),
       field('Rules and terms', text(c, 'rules', { area: true, rows: 4, max: 6000 }), 'Shown at the bottom of the public page.'),
+      check(c, 'requireLogin', 'Visitors must sign in with Google to enter (one entry per Google account)'),
       check(c, 'showWinners', 'Show the winners on the public page after the giveaway ends (first name and last initial only)'),
       h('div', { class: 'row end' },
         h('button', { class: 'btn danger', onclick: async () => {
@@ -181,7 +195,7 @@ async function editorView(id) {
         field('Message after entering', text(f, 'successMessage', { max: 300 }))),
       h('div', { class: 'panel' },
         h('h2', {}, 'Form fields'),
-        h('p', { class: 'muted' }, 'Name and email are always required. The email stops duplicate entries and lets you contact winners.'),
+        h('p', { class: 'muted' }, (S.cfg.requireLogin ? 'Name and email are always required. With Google sign-in on, the email comes from the visitor\'s Google account. ' : 'Name and email are always required. Repeated emails are rejected, ignoring Gmail dots and +tags. ') + 'Tick "Reject duplicates" on other short fields, like a Discord name, to block repeats.'),
         listEditor(f.fields, (fld) => h('div', { class: 'stack' },
           h('div', { class: 'cols' },
             field('Label', text(fld, 'label', { max: 120 })),
@@ -191,7 +205,8 @@ async function editorView(id) {
             el.addEventListener('input', () => { fld.options = el.value.split(',').map((s) => s.trim()).filter(Boolean); markDirty(); });
             return el;
           })(), 'Separate options with commas.'),
-          check(fld, 'required', 'Required', fld.locked)),
+          check(fld, 'required', 'Required', fld.locked),
+          ['text', 'url', 'email'].includes(fld.type) && check(fld, 'unique', 'Reject duplicates of this field', fld.id === 'email')),
         () => ({ id: rid(), label: 'New field', type: 'text', required: false, options: [] }), 'Add field', { noun: 'Field' })));
   };
 
@@ -220,10 +235,10 @@ async function editorView(id) {
       const q = S.q.toLowerCase();
       const rows = S.entries.filter((e) => !q || e.name.toLowerCase().includes(q) || e.email.toLowerCase().includes(q));
       tbody.replaceChildren(...(rows.length
-        ? rows.map((e) => h('tr', {}, h('td', {}, e.name), h('td', {}, e.email), h('td', {}, String(e.entries)), h('td', { class: 'nw' }, when(e.ts))))
+        ? rows.map((e) => h('tr', {}, h('td', {}, maskName(e.name)), h('td', {}, maskEmail(e.email)), h('td', {}, String(e.entries)), h('td', { class: 'nw' }, when(e.ts))))
         : [h('tr', {}, h('td', { colspan: 4, class: 'muted' }, S.entries.length ? 'Nobody matches that search.' : 'No entries yet. Share the link to get started.'))]));
     };
-    const search = h('input', { type: 'text', placeholder: 'Search name or email', value: S.q, 'aria-label': 'Search participants', style: 'max-width:260px' });
+    const search = h('input', { type: 'text', placeholder: 'Search name or email', value: S.q, 'aria-label': 'Search participants', style: 'max-width:260px', disabled: hidePII }); // search off while hidden, or it could reveal who's listed
     search.addEventListener('input', () => { S.q = search.value; fill(); });
     fill();
     return h('div', { class: 'panel stack' },
@@ -234,7 +249,7 @@ async function editorView(id) {
         h('button', { class: 'btn', onclick: async () => { try { const r = await api('GET', '/api/giveaways/' + id); S.entries = r.entries; S.winners = r.winners; draw(); } catch (e) { toast(e.message, true); } } }, 'Refresh'),
         h('a', { class: 'btn', href: `/api/giveaways/${id}/export.csv` }, 'Export CSV'),
         S.sheetUrl && h('a', { class: 'btn', href: S.sheetUrl, target: '_blank', rel: 'noopener' }, 'Open Google Sheet'),
-        h('span', { style: 'flex:1' }), search),
+        h('span', { style: 'flex:1' }), hideToggle(draw), search),
       h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Email', 'Tickets', 'Entered'].map((t) => h('th', {}, t)))), tbody)));
   };
 
@@ -261,14 +276,15 @@ async function editorView(id) {
           } }, 'Draw winners'))),
       S.winners.length > 0 && h('div', { class: 'panel stack' },
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Winners'),
-          h('button', { class: 'btn small', disabled: !active.length, onclick: () => copyText(active.map((w) => w.email).join(', ')) }, 'Copy winner emails')),
+          h('span', { class: 'row' }, hideToggle(draw),
+            h('button', { class: 'btn small', disabled: !active.length, onclick: () => copyText(active.map((w) => w.email).join(', ')) }, 'Copy winner emails'))),
         h('div', { class: 'table-wrap' }, h('table', {},
           h('thead', {}, h('tr', {}, ['Name', 'Email', 'Status', 'Drawn', 'Note', ''].map((t) => h('th', {}, t)))),
           h('tbody', {}, S.winners.slice().reverse().map((w) => h('tr', {},
-            h('td', {}, w.name), h('td', {}, w.email), h('td', {}, h('span', { class: 'pill ' + w.status }, cap(w.status))),
+            h('td', {}, maskName(w.name)), h('td', {}, maskEmail(w.email)), h('td', {}, h('span', { class: 'pill ' + w.status }, cap(w.status))),
             h('td', { class: 'nw' }, when(w.ts)), h('td', { class: 'muted' }, w.note),
             h('td', {}, w.status === 'active' && h('button', { class: 'btn small', onclick: () => {
-              if (confirm(`Reroll ${w.name}? They'll be marked as rerolled and a new winner is drawn.`)) run('reroll', { winnerId: w.id }, 'Rerolled');
+              if (confirm(`Reroll ${maskName(w.name)}? They'll be marked as rerolled and a new winner is drawn.`)) run('reroll', { winnerId: w.id }, 'Rerolled');
             } }, 'Reroll')))))))));
   };
 

@@ -21,6 +21,14 @@ function countdown(target, offset) {
   return box;
 }
 
+const signInGate = () => h('section', { class: 'panel done' },
+  h('h2', {}, 'Sign in to enter'),
+  h('p', { class: 'muted' }, 'Sign in with Google so everyone gets one entry. We see your name and email, nothing else.'),
+  h('a', { class: 'btn primary big', href: '/auth/enter/' + id }, 'Sign in with Google'));
+
+const signedInBar = (u) => h('p', { class: 'muted', style: 'margin:0' }, 'Signed in as ', h('b', {}, u.email), ' ',
+  h('button', { type: 'button', class: 'btn small', onclick: async () => { await api('POST', '/api/public/signout', {}); load(); } }, 'Use a different account'));
+
 async function load() {
   clearInterval(timer);
   let g;
@@ -51,7 +59,7 @@ async function load() {
         stubRight)),
     g.steps.length > 0 && h('section', { class: 'panel' }, h('h2', {}, 'How it works'),
       h('ol', { class: 'steps' }, g.steps.map((s) => h('li', {}, h('div', {}, h('b', {}, s.title), s.text && h('span', { class: 'muted pre' }, s.text)))))),
-    g.phase === 'open' && enterForm(g),
+    g.phase === 'open' && (g.requireLogin && !g.guest ? signInGate() : enterForm(g)),
     g.phase === 'ended' && h('section', { class: 'panel done' },
       h('h2', {}, 'This giveaway has ended'),
       g.winners?.length
@@ -98,6 +106,8 @@ function enterForm(g) {
     if (f.type === 'textarea') el = h('textarea', { id: fid, rows: 3, maxlength: 1000 });
     else if (f.type === 'select') el = h('select', { id: fid }, h('option', { value: '' }, 'Choose…'), f.options.map((o) => h('option', { value: o }, o)));
     else el = h('input', { id: fid, type: f.type === 'email' ? 'email' : f.type === 'url' ? 'url' : 'text', maxlength: 200, autocomplete: f.id === 'email' ? 'email' : f.id === 'name' ? 'name' : 'off' });
+    if (g.requireLogin && f.id === 'email') { el.value = g.guest.email; el.readOnly = true; answers.email = g.guest.email; } // comes from Google
+    if (g.requireLogin && f.id === 'name') { el.value = g.guest.name; answers.name = g.guest.name; }
     el.addEventListener('input', () => { answers[f.id] = el.value; });
     return h('label', { class: 'field', for: fid }, h('span', {}, f.label + (f.required ? ' *' : '')), el);
   });
@@ -116,13 +126,14 @@ function enterForm(g) {
       form.replaceWith(ok);
       ok.scrollIntoView({ block: 'center' });
     } catch (ex) {
+      if (ex.status === 401) return load(); // signed out in another tab: show the sign-in step again
       err.textContent = ex.message; btn.disabled = false;
       err.scrollIntoView({ block: 'center' });
     }
   } },
   methods.length > 0 && h('section', { class: 'panel' }, h('h2', {}, 'Ways to enter'),
     h('p', { class: 'muted' }, 'Entering gives you 1 ticket. Each extra you complete adds more. We trust you to be honest.'), methods),
-  h('section', { class: 'panel stack' }, h('h2', {}, g.form.title), fields, hp, err),
+  h('section', { class: 'panel stack' }, h('h2', {}, g.form.title), g.guest && signedInBar(g.guest), fields, hp, err),
   h('div', { class: 'entry-bar' },
     h('div', { class: 'tickets' }, total, h('span', { class: 'lbl' }, 'Your', h('br'), 'tickets')),
     btn));

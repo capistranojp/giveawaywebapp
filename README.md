@@ -12,6 +12,8 @@ A web app for running giveaways. Hosts sign in with Google; every giveaway is st
 - **Steps**: numbered "how it works" list shown on the public page
 - **Participants** tab with search, CSV export and a link to the Google Sheet
 - **Winners** tab: weighted random draw, **reroll** any winner, full history (rerolled winners can never be drawn again)
+- One entry per person: visitors sign in with Google to enter (on by default, switchable per giveaway), and each Google account can enter once. Their email comes from the account, so it can't be faked.
+- Duplicate checks: repeats are rejected, not recorded. Emails ignore Gmail dots and +tags, and any short field (like a Discord name) can be marked "Reject duplicates", ignoring case, spaces and punctuation.
 - Draft / Published / Closed states, plus an optional public winner announcement (first name + last initial)
 - A live ticket preview next to the editor, so you see the public page change as you type
 - Privacy policy and terms pages at `/privacy` and `/terms` (needed for Google's consent screen)
@@ -48,7 +50,9 @@ npm test          # end-to-end smoke test against the mock store
    Generate secrets with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 6. `npm start` and open <http://localhost:3000>.
 
-The app only requests the `drive.file` scope, so it can touch **only the files it created**, never the rest of your Drive. That scope is non-sensitive, so you can publish the OAuth consent screen without Google's verification review.
+Visitors who enter a giveaway sign in through the same OAuth client and the same redirect URI, but they only grant `openid`, `email` and `profile`. Because anyone must be able to sign in, **publish the app** (OAuth consent screen > Publish app): in Testing mode only the test users you list could enter.
+
+The app only requests the `drive.file` scope for hosts, so it can touch **only the files it created**, never the rest of your Drive. That scope is non-sensitive, so you can publish the OAuth consent screen without Google's verification review.
 
 ## How accounts work
 
@@ -59,7 +63,8 @@ The app only requests the `drive.file` scope, so it can touch **only the files i
 ## Things to know
 
 - **Honor system for bonus entries.** The app cannot check whether someone really followed you somewhere. Required methods must be ticked, and the link must be opened before the box unlocks, but that is a courtesy, not proof.
-- **Duplicates** are blocked by email (case-insensitive). Other protections: a hidden honeypot field and 10 entries/minute per IP (`ENTRY_RATE_LIMIT` to change).
+- **One entry per person** is enforced per Google account, so it stops casual repeats but not someone who creates new Google accounts. No website can truly identify a single PC without blocking households and schools. Matching is exact after simplifying (no typo guessing). Other protections: a hidden honeypot field and 10 entries/minute per IP (`ENTRY_RATE_LIMIT` to change).
+- If you delete rows from the `Entries` sheet by hand, restart the server (or save the giveaway once) so the duplicate list is rebuilt.
 - **Google quotas.** Sheets allows about 60 reads and 60 writes per minute per user. Public config reads are cached for 15 seconds and the duplicate check is held in memory, so normal traffic is fine, but a viral giveaway (many entries per second) could hit the write limit.
 - **Don't edit the `Config` tab by hand.** Use the app. Editing `Entries` and `Winners` in Sheets is fine, but keep the header row and column order.
 - Time zones: dates are stored in UTC and shown in the giveaway's chosen zone.

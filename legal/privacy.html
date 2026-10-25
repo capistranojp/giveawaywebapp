@@ -20,7 +20,8 @@
     <p>When you sign in with Google we receive your Google account ID, name, email address and profile picture. We ask for one Drive permission, <code>drive.file</code>. It lets the service see and edit only the files it creates for you: a "Giveaway Host" folder and one Google Sheet per giveaway. It cannot open any other file in your Drive.</p>
     <p>We store an encrypted copy of your Google refresh token so the service can keep saving entries to your Sheet while you are away.</p>
     <h3>People who enter a giveaway</h3>
-    <p>When you enter, you give a name, an email address, any other answers the host asked for, and which bonus ways to enter you ticked. The service writes this straight into the host's Google Sheet with a timestamp. We do not keep a separate copy. To block duplicate entries, the server holds the list of entered email addresses in memory. It is cleared whenever the server restarts.</p>
+    <p>Most giveaways ask you to sign in with Google first, so that each person can enter once. For this we receive your Google account ID, name, email address and profile picture. We ask for no other permission: no access to your Drive, Gmail or anything else. You may also give other answers the host asked for, and tick which bonus ways to enter you completed.</p>
+    <p>The service writes your name, email, answers, a timestamp and your Google account ID straight into the host's Google Sheet. We do not keep a separate copy. To block duplicate entries, the server keeps the entered Google account IDs, email addresses and any fields the host marked as unique in memory, in a simplified form. It is cleared whenever the server restarts.</p>
     <h3>Technical data</h3>
     <p>Your IP address is held in memory for a few minutes to limit repeated submissions. Our hosting provider may keep standard server logs.</p>
 
@@ -28,7 +29,7 @@
     <p>The host of a giveaway sees the entries to it. The host decides how to use that information and is responsible for it. If you have a question about your entry, ask the host. We do not sell data, show ads or use analytics or tracking tools.</p>
 
     <h2>Cookies</h2>
-    <p>Hosts get one signed session cookie that keeps them signed in for up to 14 days. People who enter a giveaway get no cookies. Fonts are served from this site, not from a third party.</p>
+    <p>Hosts, and people who sign in to enter a giveaway, get one signed session cookie that keeps them signed in for up to 14 days. People can end it sooner by choosing "Use a different account" on the giveaway page. Visitors who only look at a giveaway get no cookie. Fonts are served from this site, not from a third party.</p>
 
     <h2>Services we rely on</h2>
     <ul>
@@ -38,7 +39,7 @@
     </ul>
 
     <h2>Google user data</h2>
-    <p>This service's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements. Google data is used only to run the features you see in the app, and is never used for advertising or shared with others.</p>
+    <p>This service's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements. Google data is used only to run the features you see in the app. It is never used for advertising and never sold. When you enter a giveaway, you are asking to share your name and email with that giveaway's host. People entering a giveaway are asked only for the basic sign-in permissions (openid, email and profile).</p>
 
     <h2>Keeping and deleting data</h2>
     <p>We keep a host's account record until the host asks us to delete it. Hosts can cut off access at any time at <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>. Deleting a giveaway in the dashboard moves its Sheet to your Drive trash. Entries live in the host's Sheet, so hosts can edit or delete them there, and people who entered can ask the host to remove theirs.</p>
