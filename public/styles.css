@@ -236,3 +236,11 @@ details > summary { cursor: pointer; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* reveal/hide eye next to names and emails */
+.eye { margin-left: .4rem; padding: 2px; border: 0; background: none; color: var(--muted, currentColor); cursor: pointer; vertical-align: middle; border-radius: 4px; opacity: .7; }
+.eye:hover, .eye:focus-visible { opacity: 1; }
+
+/* disqualified entries stay listed but dimmed */
+tr.dq td:not(:last-child) { opacity: .55; text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+tr.dq td .pill { text-decoration: none; }

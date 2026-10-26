@@ -70,7 +70,14 @@ function sanitizeConfig(input, prev) {
   if (e <= s) throw new Error('End must be after start');
   c.start = s.toISOString();
   c.end = e.toISOString();
-  c.winnersCount = Math.min(100, Math.max(1, parseInt(i.winnersCount, 10) || 1));
+  c.stop = ''; // optional: entries close here, before the giveaway ends
+  if (i.stop) {
+    const x = new Date(i.stop);
+    if (isNaN(x) || x <= s || x >= e) throw new Error('"Stop accepting entries" must fall between the start and the end');
+    c.stop = x.toISOString();
+  }
+  c.maxEntries = Math.min(1e6, Math.max(0, parseInt(i.maxEntries, 10) || 0)); // 0 = no limit
+  c.winnersCount =Math.min(100, Math.max(1, parseInt(i.winnersCount, 10) || 1));
   c.showWinners = !!i.showWinners;
   c.requireLogin = i.requireLogin !== false; // visitors sign in with Google to enter
 
@@ -126,6 +133,8 @@ function phase(cfg, now = Date.now()) {
   return 'open';
 }
 
+const stopped = (cfg, now = Date.now()) => !!cfg.stop && now >= Date.parse(cfg.stop);
+
 const maskName = (n) => {
   const p = String(n || '').trim().split(/\s+/);
   return p.length > 1 ? `${p[0]} ${p[p.length - 1][0]}.` : p[0] || 'Winner';
@@ -137,6 +146,7 @@ function publicView(cfg, winners) {
     name: cfg.name, description: cfg.description, prize: cfg.prize, bannerUrl: cfg.bannerUrl,
     rules: cfg.rules, start: cfg.start, end: cfg.end, timezone: cfg.timezone,
     steps: cfg.steps, entryMethods: cfg.entryMethods, form: cfg.form,
+    stop: cfg.stop || '', stopped: stopped(cfg),
     phase: ph, serverNow: Date.now(), requireLogin: cfg.requireLogin !== false,
   };
   if (ph === 'ended' && cfg.showWinners) {
@@ -145,4 +155,4 @@ function publicView(cfg, winners) {
   return out;
 }
 
-module.exports = { defaultConfig, sanitizeConfig, phase, publicView, rid };
+module.exports = { defaultConfig, sanitizeConfig, phase, stopped, publicView, rid };

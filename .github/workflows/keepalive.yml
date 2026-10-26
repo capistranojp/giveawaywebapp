@@ -1,0 +1,13 @@
+# Free uptime pinger: stops Render's free plan from sleeping after 15 idle minutes.
+# Setup: repo Settings > Secrets and variables > Actions > Variables > add APP_URL = https://<your-service>.onrender.com
+# GitHub may delay or skip scheduled runs, so this keeps it awake most of the time, not always.
+name: keepalive
+on:
+  schedule: [{ cron: '*/10 * * * *' }]
+  workflow_dispatch:
+jobs:
+  ping:
+    if: vars.APP_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS --max-time 60 --retry 2 "${{ vars.APP_URL }}/healthz"

@@ -25,7 +25,8 @@ exports.getConfig = async (h, id) => structuredClone(get(h, id).cfg);
 exports.saveConfig = async (h, id, cfg) => { const g = get(h, id); g.cfg = cfg; g.modified = new Date().toISOString(); };
 exports.getEntries = async (h, id) => structuredClone(get(h, id).entries);
 exports.appendEntry = async (h, id, e) => { get(h, id).entries.push(structuredClone(e)); };
-exports.getWinners = async (h, id) => structuredClone(get(h, id).winners);
+exports.setEntryStatus = async (h, id, entry, status) => { get(h, id).entries.find((x) => x.id === entry.id).status = status; };
+exports.getWinners =async (h, id) => structuredClone(get(h, id).winners);
 exports.appendWinners = async (h, id, list) => {
   const g = get(h, id);
   for (const w of list) g.winners.push({ ...w, row: g.winners.length + 2 });

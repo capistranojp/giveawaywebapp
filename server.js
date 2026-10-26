@@ -6,7 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const hosts = require('./src/hosts');
 const { pick } = require('./src/draw');
-const { defaultConfig, sanitizeConfig, phase, publicView } = require('./src/config');
+const { defaultConfig, sanitizeConfig, phase, stopped, publicView } = require('./src/config');
 
 const MOCK = process.env.MOCK_MODE === '1' || process.argv.includes('--mock');
 const store = MOCK ? require('./src/mockStore') : require('./src/googleStore');
@@ -126,14 +126,18 @@ function remember(seen, cfg, e) {
   if (e.answers?._gid) seen.gids.add(e.answers._gid);
   for (const f of dupFields(cfg)) { const v = rawVal(e, f.id); if (v) seen.vals.get(f.id)?.add(dupKey(f, v)); }
 }
-async function seenFor(id, hostId, cfg) {
-  let seen = seenCache.get(id);
-  if (!seen) {
-    seen = { gids: new Set(), vals: new Map(dupFields(cfg).map((f) => [f.id, new Set()])) };
-    for (const e of await store.getEntries(hostId, id)) remember(seen, cfg, e);
-    seenCache.set(id, seen);
+const isDQ = (e) => e.status === 'disqualified';
+// the cache holds a promise so two first requests share one Sheet read. Disqualified people stay in the
+// duplicate lists (they can't re-enter) but don't count toward the entry cap.
+function seenFor(id, hostId, cfg) {
+  if (!seenCache.has(id)) {
+    seenCache.set(id, (async () => {
+      const seen = { gids: new Set(), count: 0, vals: new Map(dupFields(cfg).map((f) => [f.id, new Set()])) };
+      for (const e of await store.getEntries(hostId, id)) { remember(seen, cfg, e); if (!isDQ(e)) seen.count++; }
+      return seen;
+    })().catch((err) => { seenCache.delete(id); throw err; }));
   }
-  return seen;
+  return seenCache.get(id);
 }
 
 app.get('/api/giveaways', requireHost, wrap(async (req, res) => {
@@ -147,6 +151,17 @@ app.post('/api/giveaways', requireHost, wrap(async (req, res) => {
   const id = await store.createGiveaway(req.session.hostId, cfg);
   await hosts.indexSet(id, req.session.hostId);
   res.json({ id });
+}));
+
+// copy settings, steps, form and ways to enter into a new draft; dates keep their length but start now
+app.post('/api/giveaways/:id/duplicate', requireHost, wrap(async (req, res) => {
+  const id = await owned(req), h = req.session.hostId;
+  const src = await store.getConfig(h, id);
+  const start = Date.now(), t0 = Date.parse(src.start), shift = (iso) => new Date(start + Date.parse(iso) - t0).toISOString();
+  const cfg = sanitizeConfig({ ...src, name: `${src.name} (copy)`, status: 'draft', start: new Date(start).toISOString(), end: shift(src.end), stop: src.stop ? shift(src.stop) : '' });
+  const newGid = await store.createGiveaway(h, cfg);
+  await hosts.indexSet(newGid, h);
+  res.json({ id: newGid });
 }));
 
 const sheetUrl = (id) => (MOCK ? null : `https://docs.google.com/spreadsheets/d/${id}`);
@@ -175,6 +190,18 @@ app.delete('/api/giveaways/:id', requireHost, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.post('/api/giveaways/:id/entries/:entryId/status', requireHost, wrap(async (req, res) => {
+  const id = await owned(req), h = req.session.hostId;
+  const dq = req.body?.disqualified === true;
+  const [entries, winners] = await Promise.all([store.getEntries(h, id), store.getWinners(h, id)]);
+  const entry = entries.find((e) => e.id === req.params.entryId);
+  if (!entry) throw fail(404, 'Entry not found');
+  if (dq && winners.some((w) => w.entryId === entry.id && w.status === 'active')) throw fail(409, 'This person is a current winner. Reroll them first, then disqualify.');
+  await store.setEntryStatus(h, id, entry, dq ? 'disqualified' : '');
+  bust(id); // rebuild the entry count
+  res.json({ ok: true });
+}));
+
 const newId = () => crypto.randomBytes(5).toString('hex');
 const winnerRow = (e, drawId, note = '') => ({
   id: newId(), ts: new Date().toISOString(), entryId: e.id, name: e.name, email: e.email, status: 'active', drawId, note,
@@ -183,9 +210,11 @@ const winnerRow = (e, drawId, note = '') => ({
 app.post('/api/giveaways/:id/draw', requireHost, wrap(async (req, res) => {
   const id = await owned(req), h = req.session.hostId;
   const cfg = await store.getConfig(h, id);
-  if (phase(cfg) === 'open' && !req.body?.force) throw fail(409, 'The giveaway is still open. Confirm to draw early.');
   const count = Math.min(100, Math.max(1, parseInt(req.body?.count, 10) || cfg.winnersCount));
-  const [entries, winners] = await Promise.all([store.getEntries(h, id), store.getWinners(h, id)]);
+  const [all, winners] = await Promise.all([store.getEntries(h, id), store.getWinners(h, id)]);
+  const entries = all.filter((e) => !isDQ(e));
+  const full = cfg.maxEntries > 0 && entries.length >= cfg.maxEntries;
+  if (phase(cfg) === 'open' && !stopped(cfg) && !full && !req.body?.force) throw fail(409, 'The giveaway is still open. Confirm to draw early.');
   const picked = pick(entries, count, new Set(winners.map((w) => w.entryId)));
   if (!picked.length) throw fail(409, entries.length ? 'No eligible entries left. Everyone has already been drawn.' : 'There are no entries yet.');
   const drawId = newId();
@@ -195,7 +224,8 @@ app.post('/api/giveaways/:id/draw', requireHost, wrap(async (req, res) => {
 
 app.post('/api/giveaways/:id/reroll', requireHost, wrap(async (req, res) => {
   const id = await owned(req), h = req.session.hostId;
-  const [entries, winners] = await Promise.all([store.getEntries(h, id), store.getWinners(h, id)]);
+  const [all, winners] = await Promise.all([store.getEntries(h, id), store.getWinners(h, id)]);
+  const entries = all.filter((e) => !isDQ(e));
   const old = winners.find((w) => w.id === req.body?.winnerId && w.status === 'active');
   if (!old) throw fail(404, 'Active winner not found');
   const [next] = pick(entries, 1, new Set(winners.map((w) => w.entryId)));
@@ -216,10 +246,10 @@ app.get('/api/giveaways/:id/export.csv', requireHost, wrap(async (req, res) => {
   const [cfg, entries] = await Promise.all([store.getConfig(h, id), store.getEntries(h, id)]);
   const extra = cfg.form.fields.filter((f) => !f.locked);
   const methodTitle = Object.fromEntries(cfg.entryMethods.map((m) => [m.id, m.title]));
-  const rows = [['Entry ID', 'Timestamp', 'Name', 'Email', 'Total entries', 'Completed methods', ...extra.map((f) => f.label)]];
+  const rows = [['Entry ID', 'Timestamp', 'Name', 'Email', 'Total entries', 'Completed methods', ...extra.map((f) => f.label), 'Status']];
   for (const e of entries) {
     rows.push([e.id, e.ts, e.name, e.email, e.entries, e.methods.map((m) => methodTitle[m] || m).join('; '),
-      ...extra.map((f) => (typeof e.answers[f.id] === 'boolean' ? (e.answers[f.id] ? 'Yes' : 'No') : e.answers[f.id] ?? ''))]);
+      ...extra.map((f) => (typeof e.answers[f.id] === 'boolean' ? (e.answers[f.id] ? 'Yes' : 'No') : e.answers[f.id] ?? '')), e.status]);
   }
   res.type('text/csv').attachment(`${cfg.name.replace(/[^\w-]+/g, '_')}-entries.csv`).send(rows.map((r) => r.map(csvCell).join(',')).join('\n'));
 }));
@@ -241,6 +271,7 @@ app.get('/api/public/:id', wrap(async (req, res) => {
   if (cfg.status === 'draft') throw fail(404, 'This giveaway is not published yet.');
   const winners = phase(cfg) === 'ended' && cfg.showWinners ? await store.getWinners(hostId, req.params.id) : [];
   const view = publicView(cfg, winners), g = req.session?.guest;
+  if (cfg.maxEntries > 0) view.full = (await seenFor(req.params.id, hostId, cfg)).count >= cfg.maxEntries;
   view.guest = g ? { name: g.name, email: g.email, picture: g.picture } : null;
   res.set('Cache-Control', 'no-store').json(view);
 }));
@@ -263,6 +294,7 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
   const { cfg, hostId } = await publicCfg(id);
   const ph = phase(cfg);
   if (ph !== 'open') throw fail(409, ph === 'upcoming' ? 'This giveaway has not started yet.' : ph === 'ended' ? 'This giveaway has ended.' : 'This giveaway is not open.');
+  if (stopped(cfg)) throw fail(409, 'Entries are closed for this giveaway.');
   if (req.body?.hp) return res.json({ ok: true, entries: 1, message: cfg.form.successMessage }); // honeypot: pretend success to bots
 
   const needLogin = cfg.requireLogin !== false, guest = req.session?.guest;
@@ -290,6 +322,7 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
   const prev = locks.get(id) || Promise.resolve();
   const run = prev.then(async () => {
     const seen = await seenFor(id, hostId, cfg);
+    if (cfg.maxEntries > 0 && seen.count >= cfg.maxEntries) throw fail(409, 'This giveaway is full.');
     if (guest && seen.gids.has(guest.id)) throw fail(409, 'This Google account has already entered.');
     for (const f of dupFields(cfg)) {
       const v = answers[f.id];
@@ -302,6 +335,7 @@ app.post('/api/public/:id/enter', wrap(async (req, res) => {
     };
     await store.appendEntry(hostId, id, entry);
     remember(seen, cfg, entry);
+    seen.count++;
     return entry;
   });
   locks.set(id, run.catch(() => {}));
@@ -319,6 +353,7 @@ for (const name of ['privacy', 'terms']) {
   const html = fs.readFileSync(path.join(__dirname, 'legal', name + '.html'), 'utf8').replaceAll('{{CONTACT}}', contact);
   app.get('/' + name, (req, res) => res.type('html').send(html));
 }
+app.get('/healthz', (req, res) => res.type('text').send('ok')); // for an uptime pinger: touches nothing, no Google calls
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/g/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'giveaway.html')));
 

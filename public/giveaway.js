@@ -38,10 +38,13 @@ async function load() {
     return;
   }
   document.title = g.name;
-  const live = g.phase === 'open' || g.phase === 'upcoming';
+  const shut = g.stopped || g.full; // closed early by date, or every spot is taken
+  const taking = g.phase === 'open' && !shut; // entries can still come in
+  const live = taking || g.phase === 'upcoming';
+  const lastDay = g.stop || g.end;
   const stubRight = live
-    ? h('div', {}, h('div', { class: 'muted-on-ticket', style: 'font-size:.82rem;opacity:.75;margin-bottom:6px' }, g.phase === 'open' ? 'Closes in' : 'Opens in'),
-      countdown(Date.parse(g.phase === 'open' ? g.end : g.start), g.serverNow - Date.now()))
+    ? h('div', {}, h('div', { class: 'muted-on-ticket', style: 'font-size:.82rem;opacity:.75;margin-bottom:6px' }, taking ? 'Closes in' : 'Opens in'),
+      countdown(Date.parse(taking ? lastDay : g.start), g.serverNow - Date.now()))
     : h('span', { class: 'closed-tag' }, 'Closed');
 
   mount(app, 
@@ -55,11 +58,13 @@ async function load() {
       h('div', { class: 'ticket-stub' },
         h('div', { class: 'when' },
           h('div', {}, h('span', {}, 'Opens'), h('b', {}, fmtDate(g.start, g.timezone))),
-          h('div', {}, h('span', {}, 'Closes'), h('b', {}, fmtDate(g.end, g.timezone)))),
+          h('div', {}, h('span', {}, 'Closes'), h('b', {}, fmtDate(lastDay, g.timezone)))),
         stubRight)),
     g.steps.length > 0 && h('section', { class: 'panel' }, h('h2', {}, 'How it works'),
       h('ol', { class: 'steps' }, g.steps.map((s) => h('li', {}, h('div', {}, h('b', {}, s.title), s.text && h('span', { class: 'muted pre' }, s.text)))))),
-    g.phase === 'open' && (g.requireLogin && !g.guest ? signInGate() : enterForm(g)),
+    taking && (g.requireLogin && !g.guest ? signInGate() : enterForm(g)),
+    g.phase === 'open' && shut && h('section', { class: 'panel done' },
+      h('h2', {}, g.full ? 'This giveaway is full' : 'Entries are closed'), h('p', { class: 'muted' }, 'Thanks to everyone who entered. Winners will be drawn soon.')),
     g.phase === 'ended' && h('section', { class: 'panel done' },
       h('h2', {}, 'This giveaway has ended'),
       g.winners?.length

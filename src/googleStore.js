@@ -6,7 +6,7 @@ const { google } = require('googleapis');
 const hosts = require('./hosts');
 
 const SCOPES = ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/drive.file'];
-const ENTRY_HEAD = ['Entry ID', 'Timestamp', 'Name', 'Email', 'Total entries', 'Completed methods (JSON)', 'Answers (JSON)'];
+const ENTRY_HEAD = ['Entry ID', 'Timestamp', 'Name', 'Email', 'Total entries', 'Completed methods (JSON)', 'Answers (JSON)', 'Status'];
 const WIN_HEAD = ['Winner ID', 'Timestamp', 'Entry ID', 'Name', 'Email', 'Status', 'Draw ID', 'Note'];
 
 const oauth = () => new google.auth.OAuth2(
@@ -84,7 +84,7 @@ exports.createGiveaway = async (hostId, cfg) => {
       valueInputOption: 'RAW',
       data: [
         { range: 'Config!A1:B1', values: [['Config (managed by Giveaway Host, edit in the app)', JSON.stringify(cfg)]] },
-        { range: 'Entries!A1:G1', values: [ENTRY_HEAD] },
+        { range: 'Entries!A1:H1', values: [ENTRY_HEAD] },
         { range: 'Winners!A1:H1', values: [WIN_HEAD] },
       ],
     },
@@ -124,11 +124,18 @@ const parseJSON = (s, d) => { try { return JSON.parse(s); } catch { return d; } 
 
 exports.getEntries = async (hostId, id) => {
   const { sheets } = await cl(hostId);
-  const { data } = await sheets.spreadsheets.values.get({ spreadsheetId: id, range: 'Entries!A2:G' });
-  return (data.values || []).map((r) => ({
-    id: r[0], ts: r[1], name: r[2], email: r[3], entries: parseInt(r[4], 10) || 1,
-    methods: parseJSON(r[5], []), answers: parseJSON(r[6], {}),
+  const { data } = await sheets.spreadsheets.values.get({ spreadsheetId: id, range: 'Entries!A2:H' });
+  return (data.values || []).map((r, i) => ({
+    row: i + 2, id: r[0], ts: r[1], name: r[2], email: r[3], entries: parseInt(r[4], 10) || 1,
+    methods: parseJSON(r[5], []), answers: parseJSON(r[6], {}), status: r[7] || '', // older sheets have no Status column
   }));
+};
+
+exports.setEntryStatus = async (hostId, id, entry, status) => {
+  const { sheets } = await cl(hostId);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: id, range: `Entries!H${entry.row}`, valueInputOption: 'RAW', requestBody: { values: [[status]] },
+  });
 };
 
 exports.appendEntry = async (hostId, id, e) => {

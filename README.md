@@ -6,7 +6,7 @@ A web app for running giveaways. Hosts sign in with Google; every giveaway is st
 
 **Host dashboard** (sign in with Google)
 - Editable giveaway name, prize, description, banner image and rules
-- Editable **start and end date/time** with a time zone picker
+- Editable **start and end date/time** with a time zone picker, plus an optional **stop accepting entries** date (close entries early, then draw before the giveaway ends)
 - Editable **entry form**: heading, button text, success message, and your own fields (short text, long text, dropdown, checkbox, link). Name and email are always required.
 - **Ways to enter**: titled entry methods (follow, subscribe, join, visit, share, comment, custom) with an optional link, bonus entries and a "required" flag
 - **Steps**: numbered "how it works" list shown on the public page
@@ -14,6 +14,9 @@ A web app for running giveaways. Hosts sign in with Google; every giveaway is st
 - **Winners** tab: weighted random draw, **reroll** any winner, full history (rerolled winners can never be drawn again)
 - One entry per person: visitors sign in with Google to enter (on by default, switchable per giveaway), and each Google account can enter once. Their email comes from the account, so it can't be faked.
 - Duplicate checks: repeats are rejected, not recorded. Emails ignore Gmail dots and +tags, and any short field (like a Discord name) can be marked "Reject duplicates", ignoring case, spaces and punctuation.
+- **Maximum entries** (optional): entries close by themselves when the number is reached
+- **Disqualify** an entry from the Participants tab (kept in the Sheet, marked, never drawn, can be restored). Current winners must be rerolled first.
+- **Duplicate giveaway**: copies settings, form, ways to enter and steps into a new draft, with the dates moved to start now
 - Draft / Published / Closed states, plus an optional public winner announcement (first name + last initial)
 - A live ticket preview next to the editor, so you see the public page change as you type
 - Privacy policy and terms pages at `/privacy` and `/terms` (needed for Google's consent screen)
@@ -85,7 +88,8 @@ Render's free web service runs this app as-is, but its disk is wiped on every re
 3. **Google Cloud:** add `https://<your-service>.onrender.com/auth/callback` to the OAuth client's authorized redirect URIs. Then in Google Auth Platform > Branding set the home page to your site URL, the privacy policy to `<your URL>/privacy` and the terms to `<your URL>/terms`, and publish the app under Audience.
 
    The `/privacy` and `/terms` pages are plain-language templates written to match what this app does, with your `CONTACT_EMAIL` filled in. They are not legal advice. Read them and adjust the files in `legal/` for your situation, especially if you run giveaways with prizes of real value.
-4. Keep `TOKEN_KEY` stable. Changing it makes stored tokens unreadable and every host must sign in again.
+4. **Keep it awake (optional):** the repo includes `.github/workflows/keepalive.yml`, which pings `/healthz` every 10 minutes. In the GitHub repo go to Settings > Secrets and variables > Actions > Variables and add `APP_URL` = your Render URL. GitHub sometimes delays scheduled runs, so the app may still nap occasionally.
+5. Keep `TOKEN_KEY` stable. Changing it makes stored tokens unreadable and every host must sign in again.
 
 Any other Node 18+ host works the same way. Without the two Supabase variables the app falls back to a local `data/kv.json` file, which is fine on your own machine or a VPS with a persistent disk.
 

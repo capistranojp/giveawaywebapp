@@ -11,16 +11,22 @@ const METHOD_TYPES = { follow: 'Follow', subscribe: 'Subscribe', join: 'Join', v
 const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', select: 'Dropdown', checkbox: 'Checkbox', url: 'Link', email: 'Email' };
 const when = (iso) => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
-// "Hide names and emails" for screen-sharing; masks display only, copy/export still use real data
-let hidePII = false;
-const maskName = (n) => (hidePII ? String(n).split(/\s+/).map((w) => w.slice(0, 1) + '•••').join(' ') : n);
+// Names and emails are masked by default (safe for screen-sharing); the eye reveals one cell. Display only: copy/export use real data.
+const revealed = new Set();
+const maskName = (n) => String(n).split(/\s+/).map((w) => w.slice(0, 1) + '•••').join(' ');
 const maskEmail = (e) => {
-  if (!hidePII) return e;
   const [u, d = ''] = String(e).split('@'), i = d.lastIndexOf('.');
   return u.slice(0, 1) + '•••@' + d.slice(0, 1) + '•••' + (i > 0 ? d.slice(i) : '');
 };
-const hideToggle = (redraw) => h('label', { class: 'row', style: 'gap:.4rem' },
-  h('input', { type: 'checkbox', checked: hidePII, onchange: (ev) => { hidePII = ev.target.checked; redraw(); } }), 'Hide names and emails');
+const EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+// one table cell with an eye button; key identifies the cell, redraw refreshes the table
+const piiCell = (key, value, mask, redraw) => {
+  const on = revealed.has(key), btn = h('button', { type: 'button', class: 'eye', 'aria-label': on ? 'Hide' : 'Show', 'aria-pressed': String(on), title: on ? 'Hide' : 'Show',
+    onclick: () => { on ? revealed.delete(key) : revealed.add(key); redraw(); } });
+  btn.innerHTML = on ? EYE_OFF : EYE; // static markup, no user data
+  return h('td', { class: 'nw' }, h('span', { class: 'pii' }, on ? value : mask(value)), btn);
+};
 
 // ---------- shell ----------
 function drawTop() {
@@ -60,6 +66,10 @@ async function listView() {
     e.currentTarget.disabled = true;
     try { const { id } = await api('POST', '/api/giveaways', { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }); location.hash = '#/g/' + id; } catch (ex) { toast(ex.message, true); e.currentTarget.disabled = false; }
   };
+  const dup = async (gid, btn) => {
+    btn.disabled = true;
+    try { const { id } = await api('POST', `/api/giveaways/${gid}/duplicate`); location.hash = '#/g/' + id; toast('Copied as a draft. Check the dates before publishing.'); } catch (ex) { toast(ex.message, true); btn.disabled = false; }
+  };
   const stub = { open: 'Open', upcoming: 'Starts soon', draft: 'Draft', ended: 'Ended' };
   const line = (g, ph) => ph === 'draft' ? 'Not published yet' : ph === 'upcoming' ? 'Opens ' + when(g.start) : ph === 'ended' ? 'Ended ' + when(g.end) : 'Closes ' + when(g.end);
   mount(app, 
@@ -75,6 +85,7 @@ async function listView() {
           h('div', { class: 'g-main' }, h('h2', {}, g.name), h('p', {}, line(g, ph))),
           h('div', { class: 'g-actions' },
             h('a', { class: 'btn primary small', href: '#/g/' + g.id }, 'Manage'),
+            h('button', { class: 'btn small', onclick: (e) => dup(g.id, e.currentTarget) }, 'Duplicate'),
             g.status !== 'draft' && h('button', { class: 'btn small', onclick: () => copyText(location.origin + '/g/' + g.id) }, 'Copy link')));
       })),
   );
@@ -101,7 +112,7 @@ async function editorView(id) {
     h('div', { class: 'ticket-stub' },
       h('div', { class: 'when' },
         h('div', {}, h('span', {}, 'Opens'), h('b', {}, fmtDate(c.start, c.timezone))),
-        h('div', {}, h('span', {}, 'Closes'), h('b', {}, fmtDate(c.end, c.timezone)))),
+        h('div', {}, h('span', {}, 'Closes'), h('b', {}, fmtDate(c.stop || c.end, c.timezone)))),
       h('div', { class: 'chips' },
         chip(`${c.entryMethods.length} ${c.entryMethods.length === 1 ? 'way' : 'ways'} to enter`),
         chip(`${c.steps.length} ${c.steps.length === 1 ? 'step' : 'steps'}`),
@@ -156,17 +167,17 @@ async function editorView(id) {
   const tabDetails = () => {
     const c = S.cfg;
     const dateInput = (key) => {
-      const el = h('input', { type: 'datetime-local', value: utcToZoned(c[key], c.timezone) });
+      const el = h('input', { type: 'datetime-local', value: c[key] ? utcToZoned(c[key], c.timezone) : '' });
       el.dataset.key = key;
-      el.addEventListener('input', () => { const iso = zonedToUtc(el.value, c.timezone); if (iso) { c[key] = iso; markDirty(); } });
+      el.addEventListener('input', () => { const iso = zonedToUtc(el.value, c.timezone); if (iso || key === 'stop') { c[key] = iso || ''; markDirty(); } }); // stop may be cleared
       return el;
     };
-    const startEl = dateInput('start'), endEl = dateInput('end');
+    const startEl = dateInput('start'), endEl = dateInput('end'), stopEl = dateInput('stop');
     const tz = h('select', {}, [...new Set(TZS)].map((z) => h('option', { value: z }, z)));
     tz.value = c.timezone;
     tz.addEventListener('change', () => { // keep the wall-clock times the host typed, reinterpret them in the new zone
       c.timezone = tz.value;
-      for (const el of [startEl, endEl]) { const iso = zonedToUtc(el.value, c.timezone); if (iso) c[el.dataset.key] = iso; }
+      for (const el of [startEl, endEl, stopEl]) { const iso = zonedToUtc(el.value, c.timezone); if (iso) c[el.dataset.key] = iso; }
       markDirty();
     });
     return h('div', { class: 'panel stack' },
@@ -176,11 +187,22 @@ async function editorView(id) {
         field('Number of winners', text(c, 'winnersCount', { type: 'number', min: 1, maxN: 100 }))),
       field('Description', text(c, 'description', { area: true, rows: 5, max: 4000 })),
       field('Banner image link', text(c, 'bannerUrl', { type: 'url', ph: 'https://…' }), 'Optional. Paste the web address of an image.'),
-      h('div', { class: 'cols' }, field('Opens', startEl), field('Closes', endEl), field('Time zone', tz)),
+      h('div', { class: 'cols' }, field('Opens', startEl), field('Ends', endEl), field('Time zone', tz)),
+      field('Maximum entries (optional)', text(c, 'maxEntries', { type: 'number', min: 0, maxN: 1000000, ph: '0 = no limit' }), 'Entries close automatically once this many people have entered. Disqualified entries don\'t count.'),
+      field('Stop accepting entries (optional)', stopEl, 'Leave empty to accept entries until the giveaway ends. Set an earlier time to close entries first and draw before the end date. Clear the box to remove it.'),
       field('Rules and terms', text(c, 'rules', { area: true, rows: 4, max: 6000 }), 'Shown at the bottom of the public page.'),
       check(c, 'requireLogin', 'Visitors must sign in with Google to enter (one entry per Google account)'),
       check(c, 'showWinners', 'Show the winners on the public page after the giveaway ends (first name and last initial only)'),
       h('div', { class: 'row end' },
+        h('button', { class: 'btn', onclick: async (e) => {
+          const b = e.currentTarget; b.disabled = true;
+          try {
+            if (S.dirty) await api('PUT', '/api/giveaways/' + id, S.cfg); // copy what's on screen, not the last save
+            S.dirty = false;
+            const r = await api('POST', `/api/giveaways/${id}/duplicate`);
+            location.hash = '#/g/' + r.id; toast('Copied as a draft. Check the dates before publishing.');
+          } catch (ex) { toast(ex.message, true); b.disabled = false; }
+        } }, 'Duplicate giveaway'),
         h('button', { class: 'btn danger', onclick: async () => {
           if (!confirm('Delete this giveaway? Its Google Sheet moves to your Drive trash.')) return;
           try { await api('DELETE', '/api/giveaways/' + id); S.dirty = false; location.hash = '#/'; } catch (e) { toast(e.message, true); }
@@ -230,38 +252,50 @@ async function editorView(id) {
 
   const tabEntries = () => {
     const tbody = h('tbody');
-    const total = S.entries.reduce((s, e) => s + e.entries, 0);
+    const live = S.entries.filter((e) => e.status !== 'disqualified');
+    const total = live.reduce((s, e) => s + e.entries, 0);
+    const setDQ = async (e, dq) => {
+      if (dq && !confirm(`Disqualify ${maskName(e.name)}? They stop counting and can't be drawn. They also can't re-enter. You can restore them later.`)) return;
+      try { await api('POST', `/api/giveaways/${id}/entries/${e.id}/status`, { disqualified: dq }); e.status = dq ? 'disqualified' : ''; toast(dq ? 'Disqualified' : 'Restored'); draw(); } catch (ex) { toast(ex.message, true); }
+    };
     const fill = () => {
       const q = S.q.toLowerCase();
-      const rows = S.entries.filter((e) => !q || e.name.toLowerCase().includes(q) || e.email.toLowerCase().includes(q));
+      // search only matches cells that are revealed, so it can't be used to probe hidden names
+      const rows = S.entries.filter((e) => !q || (revealed.has(e.id + 'n') && e.name.toLowerCase().includes(q)) || (revealed.has(e.id + 'e') && e.email.toLowerCase().includes(q)));
       tbody.replaceChildren(...(rows.length
-        ? rows.map((e) => h('tr', {}, h('td', {}, maskName(e.name)), h('td', {}, maskEmail(e.email)), h('td', {}, String(e.entries)), h('td', { class: 'nw' }, when(e.ts))))
-        : [h('tr', {}, h('td', { colspan: 4, class: 'muted' }, S.entries.length ? 'Nobody matches that search.' : 'No entries yet. Share the link to get started.'))]));
+        ? rows.map((e) => { const dq = e.status === 'disqualified'; return h('tr', { class: dq ? 'dq' : '' },
+          piiCell(e.id + 'n', e.name, maskName, fill), piiCell(e.id + 'e', e.email, maskEmail, fill),
+          h('td', {}, dq ? h('span', { class: 'pill rerolled' }, 'Disqualified') : String(e.entries)), h('td', {}, when(e.ts)),
+          h('td', {}, h('button', { class: 'btn small', onclick: () => setDQ(e, !dq) }, dq ? 'Restore' : 'Disqualify'))); })
+        : [h('tr', {}, h('td', { colspan: 5, class: 'muted' }, S.entries.length ? 'Nobody matches that search.' : 'No entries yet. Share the link to get started.'))]));
     };
-    const search = h('input', { type: 'text', placeholder: 'Search name or email', value: S.q, 'aria-label': 'Search participants', style: 'max-width:260px', disabled: hidePII }); // search off while hidden, or it could reveal who's listed
+    const search = h('input', { type: 'text', placeholder: 'Search revealed names or emails', value: S.q, 'aria-label': 'Search participants', style: 'max-width:260px' });
     search.addEventListener('input', () => { S.q = search.value; fill(); });
     fill();
+    const cap_ = S.cfg.maxEntries > 0 ? ` of ${S.cfg.maxEntries}` : '';
     return h('div', { class: 'panel stack' },
       h('div', { class: 'stats' },
-        h('div', { class: 'stat' }, h('b', {}, String(S.entries.length)), S.entries.length === 1 ? 'participant' : 'participants'),
+        h('div', { class: 'stat' }, h('b', {}, live.length + cap_), live.length === 1 && !cap_ ? 'participant' : 'participants'),
         h('div', { class: 'stat' }, h('b', {}, String(total)), total === 1 ? 'ticket in total' : 'tickets in total')),
       h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: async () => { try { const r = await api('GET', '/api/giveaways/' + id); S.entries = r.entries; S.winners = r.winners; draw(); } catch (e) { toast(e.message, true); } } }, 'Refresh'),
         h('a', { class: 'btn', href: `/api/giveaways/${id}/export.csv` }, 'Export CSV'),
         S.sheetUrl && h('a', { class: 'btn', href: S.sheetUrl, target: '_blank', rel: 'noopener' }, 'Open Google Sheet'),
-        h('span', { style: 'flex:1' }), hideToggle(draw), search),
-      h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Email', 'Tickets', 'Entered'].map((t) => h('th', {}, t)))), tbody)));
+        h('span', { style: 'flex:1' }), search),
+      h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'Email', 'Tickets', 'Entered', ''].map((t) => h('th', {}, t)))), tbody)));
   };
 
   const tabWinners = () => {
     const drawn = new Set(S.winners.map((w) => w.entryId));
-    const eligible = S.entries.filter((e) => !drawn.has(e.id));
+    const live = S.entries.filter((e) => e.status !== 'disqualified');
+    const eligible = live.filter((e) => !drawn.has(e.id));
     const active = S.winners.filter((w) => w.status === 'active');
     const countEl = h('input', { type: 'number', min: 1, max: 100, value: String(S.cfg.winnersCount), style: 'width:90px', 'aria-label': 'Winners to draw' });
     const run = async (url, body, okMsg) => {
       try { const r = await api('POST', `/api/giveaways/${id}/${url}`, body); S.winners = r.winners; toast(okMsg); draw(); } catch (e) { toast(e.message, true); }
     };
-    const early = phaseOf(S.cfg) === 'open';
+    const full = S.cfg.maxEntries > 0 && live.length >= S.cfg.maxEntries;
+    const early = phaseOf(S.cfg) === 'open' && !(S.cfg.stop && Date.now() >= Date.parse(S.cfg.stop)) && !full;
     return h('div', { class: 'stack' },
       h('div', { class: 'panel stack' },
         h('div', { class: 'stats' },
@@ -276,12 +310,11 @@ async function editorView(id) {
           } }, 'Draw winners'))),
       S.winners.length > 0 && h('div', { class: 'panel stack' },
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, 'Winners'),
-          h('span', { class: 'row' }, hideToggle(draw),
-            h('button', { class: 'btn small', disabled: !active.length, onclick: () => copyText(active.map((w) => w.email).join(', ')) }, 'Copy winner emails'))),
+          h('button', { class: 'btn small', disabled: !active.length, onclick: () => copyText(active.map((w) => w.email).join(', ')) }, 'Copy winner emails')),
         h('div', { class: 'table-wrap' }, h('table', {},
           h('thead', {}, h('tr', {}, ['Name', 'Email', 'Status', 'Drawn', 'Note', ''].map((t) => h('th', {}, t)))),
           h('tbody', {}, S.winners.slice().reverse().map((w) => h('tr', {},
-            h('td', {}, maskName(w.name)), h('td', {}, maskEmail(w.email)), h('td', {}, h('span', { class: 'pill ' + w.status }, cap(w.status))),
+            piiCell(w.id + 'n', w.name, maskName, draw), piiCell(w.id + 'e', w.email, maskEmail, draw), h('td', {}, h('span', { class: 'pill ' + w.status }, cap(w.status))),
             h('td', { class: 'nw' }, when(w.ts)), h('td', { class: 'muted' }, w.note),
             h('td', {}, w.status === 'active' && h('button', { class: 'btn small', onclick: () => {
               if (confirm(`Reroll ${maskName(w.name)}? They'll be marked as rerolled and a new winner is drawn.`)) run('reroll', { winnerId: w.id }, 'Rerolled');

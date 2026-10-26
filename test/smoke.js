@@ -76,6 +76,16 @@ const openDates = () => ({ start: new Date(Date.now() - 3600e3).toISOString(), e
   const enter = (n, extra = {}) => req('POST', `/api/public/${id}/enter`, {
     answers: { name: n, email: `${n.toLowerCase()}@x.com`, agree: true, plat: 'PC', ...extra.answers }, methods: extra.methods ?? ['req', 'tw'],
   }, { anon: true });
+  // optional "stop accepting entries" date
+  assert.equal((await req('PUT', '/api/giveaways/' + id, { ...cfg, stop: cfg.end })).status, 400, 'stop must be before end');
+  assert.equal((await req('PUT', '/api/giveaways/' + id, { ...cfg, stop: new Date(Date.parse(cfg.start) - 1e3).toISOString() })).status, 400, 'stop must be after start');
+  const stop = new Date(Date.parse(cfg.start) + 1800e3).toISOString(); // already passed, still before the end
+  assert.equal((await req('PUT', '/api/giveaways/' + id, { ...cfg, stop })).status, 200);
+  assert.equal((await enter('TooLate')).status, 409, 'entries rejected after the stop date');
+  const stopPub = await req('GET', '/api/public/' + id, undefined, { anon: true });
+  assert.ok(stopPub.body.phase === 'open' && stopPub.body.stopped === true, 'public view reports entries closed');
+  assert.equal((await req('PUT', '/api/giveaways/' + id, { ...cfg, stop: '' })).body.config.stop, '', 'stop can be cleared');
+
   const a = await enter('Alice');
   assert.equal(a.status, 200); assert.equal(a.body.entries, 1 + 3 + 1);
   assert.equal((await enter('Alice')).status, 409, 'duplicate email rejected');
@@ -157,6 +167,42 @@ const openDates = () => ({ start: new Date(Date.now() - 3600e3).toISOString(), e
   assert.equal((await req('GET', '/api/public/' + idB, undefined, { jar: nora })).body.guest, null, 'signing out clears the visitor');
   assert.equal((await enterB(nora)).status, 401);
   assert.equal((await req('GET', '/auth/enter/bad%20id', undefined, { anon: true })).status, 400, 'bad giveaway id rejected');
+
+  // ---------- entry cap, disqualify, duplicate ----------
+  const pubFull = async () => (await req('GET', '/api/public/' + idB, undefined, { anon: true })).body.full;
+  assert.equal((await req('PUT', '/api/giveaways/' + idB, { ...cfgB, maxEntries: 3 })).body.config.maxEntries, 3);
+  assert.equal(await pubFull(), false);
+  assert.equal((await enterB(await signIn(idB, 'Pia'))).status, 200);
+  assert.equal(await pubFull(), true, 'public page reports the giveaway is full');
+  assert.equal((await enterB(await signIn(idB, 'Quin'))).status, 409, 'entry cap enforced');
+  const statusUrl = (e) => `/api/giveaways/${idB}/entries/${e.id}/status`;
+  const byEmail = async (m) => (await req('GET', '/api/giveaways/' + idB)).body.entries.find((e) => e.email === m);
+  const omar = await byEmail('omar@x.com');
+  assert.equal((await req('POST', statusUrl(omar), { disqualified: true })).status, 200);
+  assert.equal((await byEmail('omar@x.com')).status, 'disqualified');
+  assert.equal(await pubFull(), false, 'disqualified entries do not count toward the cap');
+  assert.equal((await enterB(await signIn(idB, 'Omar'))).status, 409, 'a disqualified person cannot re-enter');
+  assert.equal((await enterB(await signIn(idB, 'Quin'))).status, 200, 'disqualifying frees a spot');
+  const dr = await req('POST', `/api/giveaways/${idB}/draw`, { count: 50, force: true });
+  assert.equal(dr.body.winners.length, 3, 'disqualified entries are never drawn');
+  assert.ok(!dr.body.winners.some((w) => w.entryId === omar.id));
+  const nora1 = await byEmail('nora@x.com');
+  assert.equal((await req('POST', statusUrl(nora1), { disqualified: true })).status, 409, 'a current winner must be rerolled first');
+  assert.equal((await req('POST', statusUrl(omar), { disqualified: false })).status, 200);
+  assert.equal((await byEmail('omar@x.com')).status, '', 'restore works');
+  assert.equal((await req('POST', `/api/giveaways/${idB}/entries/nope/status`, { disqualified: true })).status, 404);
+  assert.equal((await req('POST', statusUrl(omar), { disqualified: true }, { anon: true })).status, 401, 'host only');
+
+  const copy = await req('POST', `/api/giveaways/${idB}/duplicate`, {});
+  assert.equal(copy.status, 200);
+  const cc = (await req('GET', '/api/giveaways/' + copy.body.id)).body;
+  assert.equal(cc.config.name, 'Signed in (copy)');
+  assert.equal(cc.config.status, 'draft'); assert.equal(cc.config.maxEntries, 3);
+  assert.equal(cc.entries.length, 0); assert.equal(cc.winners.length, 0);
+  assert.ok(Date.parse(cc.config.end) > Date.now(), 'copied dates are moved to the future');
+  assert.equal((await req('POST', `/api/giveaways/${idB}/duplicate`, {}, { anon: true })).status, 401);
+
+  assert.equal((await req('GET', '/healthz', undefined, { anon: true })).body, 'ok');
 
   // ---------- legal pages ----------
   for (const p of ['privacy', 'terms']) {
